@@ -1,0 +1,6 @@
+node_modules/
+dist/
+imports/
+moneys3new.xml
+.env
+*.log

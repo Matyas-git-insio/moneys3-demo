@@ -1,0 +1,18 @@
+{
+  "name": "money-s3-typescript",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "check": "tsc --noEmit",
+    "demo": "tsx demos3.ts",
+    "cli": "tsx clis3.ts"
+  },
+  "dependencies": {
+    "fast-xml-parser": "^5.11.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}
