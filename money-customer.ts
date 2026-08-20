@@ -1,10 +1,22 @@
- import {
+import {
+  access,
+  copyFile,
+  mkdir,
   readFile,
-  writeFile,
-  mkdir
-} from "fs/promises";
+  rm,
+  stat,
+  writeFile
+} from "node:fs/promises";
 
-import * as path from "path";
+import {
+  constants as fsConstants
+} from "node:fs";
+
+import {
+  spawn
+} from "node:child_process";
+
+import * as path from "node:path";
 
 import {
   XMLParser,
@@ -15,22 +27,16 @@ import {
 export type MoneyCustomer = {
   guid?: string;
   code?: string;
-
   name: string;
-
   ico?: string;
   dic?: string;
-
   street?: string;
   city?: string;
   postCode?: string;
-
   country?: string;
   countryCode?: string;
-
   mobilePrefix?: string;
   mobile?: string;
-
   vatPayer?: boolean;
   physicalPerson?: boolean;
 };
@@ -39,20 +45,15 @@ export type MoneyCustomer = {
 export type NewMoneyCustomer = {
   code: string;
   name: string;
-
   ico?: string;
   dic?: string;
-
   street?: string;
   city?: string;
   postCode?: string;
-
   country?: string;
   countryCode?: string;
-
   mobilePrefix?: string;
   mobile?: string;
-
   vatPayer?: boolean;
   physicalPerson?: boolean;
 };
@@ -60,20 +61,15 @@ export type NewMoneyCustomer = {
 
 export type MoneyCustomerUpdate = {
   name?: string;
-
   ico?: string;
   dic?: string;
-
   street?: string;
   city?: string;
   postCode?: string;
-
   country?: string;
   countryCode?: string;
-
   mobilePrefix?: string;
   mobile?: string;
-
   vatPayer?: boolean;
   physicalPerson?: boolean;
 };
@@ -88,12 +84,8 @@ export type CustomerPage = {
 
 
 export class MoneyCustomerError extends Error {
-
-  constructor(
-    message: string
-  ) {
+  constructor(message: string) {
     super(message);
-
     this.name = "MoneyCustomerError";
   }
 }
@@ -101,6 +93,13 @@ export class MoneyCustomerError extends Error {
 
 type XmlObject =
   Record<string, any>;
+
+
+type TransferContext = {
+  agendaCode: string;
+  year: string;
+  transferCode: string;
+};
 
 
 function text(
@@ -153,7 +152,8 @@ function removeUndefined(
     return value
       .map(removeUndefined)
       .filter(
-        item => item !== undefined
+        item =>
+          item !== undefined
       );
   }
 
@@ -176,21 +176,25 @@ function removeUndefined(
         removeUndefined(item);
 
 
-      if (cleaned !== undefined) {
-
-        if (
-          typeof cleaned === "object" &&
-          cleaned !== null &&
-          !Array.isArray(cleaned) &&
-          Object.keys(cleaned).length === 0
-        ) {
-          continue;
-        }
-
-
-        result[key] =
-          cleaned;
+      if (
+        cleaned === undefined
+      ) {
+        continue;
       }
+
+
+      if (
+        typeof cleaned === "object" &&
+        cleaned !== null &&
+        !Array.isArray(cleaned) &&
+        Object.keys(cleaned).length === 0
+      ) {
+        continue;
+      }
+
+
+      result[key] =
+        cleaned;
     }
 
 
@@ -202,66 +206,300 @@ function removeUndefined(
 }
 
 
+function timestamp():
+  string {
+
+  return new Date()
+    .toISOString()
+    .replace(
+      /[:.]/g,
+      "-"
+    );
+}
+
+
 export class MoneyCustomerClient {
 
   private readonly sourceXmlPath: string;
   private readonly outputDirectory: string;
 
-  private readonly parser:
-    XMLParser;
+  private readonly configuredMoneyExePath?: string;
+  private readonly moneyPassword?: string;
+  private readonly configuredTransferCode?: string;
 
-  private readonly builder:
-    XMLBuilder;
+  private readonly parser: XMLParser;
+  private readonly builder: XMLBuilder;
 
 
   constructor(options: {
     sourceXmlPath: string;
     outputDirectory?: string;
+
+    moneyExePath?: string;
+    moneyPassword?: string;
+    transferCode?: string;
   }) {
 
     this.sourceXmlPath =
-      options.sourceXmlPath;
+      path.resolve(
+        options.sourceXmlPath
+      );
+
 
     this.outputDirectory =
-      options.outputDirectory ??
-      "./imports";
+      path.resolve(
+        options.outputDirectory ??
+        "./imports"
+      );
+
+
+    this.configuredMoneyExePath =
+      options.moneyExePath ??
+      process.env.MONEY_S3_EXE;
+
+
+    this.moneyPassword =
+      options.moneyPassword ??
+      process.env.MONEY_S3_PASSWORD;
+
+
+    this.configuredTransferCode =
+      options.transferCode;
 
 
     this.parser =
       new XMLParser({
-
-        ignoreAttributes:
-          false,
-
-        attributeNamePrefix:
-          "@_",
-
-        parseTagValue:
-          false,
-
-        parseAttributeValue:
-          false,
-
-        trimValues:
-          true
+        ignoreAttributes: false,
+        attributeNamePrefix: "@_",
+        parseTagValue: false,
+        parseAttributeValue: false,
+        trimValues: true
       });
 
 
     this.builder =
       new XMLBuilder({
-
-        ignoreAttributes:
-          false,
-
-        attributeNamePrefix:
-          "@_",
-
-        format:
-          true,
-
-        suppressEmptyNode:
-          true
+        ignoreAttributes: false,
+        attributeNamePrefix: "@_",
+        format: true,
+        suppressEmptyNode: true
       });
+  }
+
+
+  private async fileExists(
+    filePath: string
+  ): Promise<boolean> {
+
+    try {
+
+      await access(
+        filePath,
+        fsConstants.F_OK
+      );
+
+      return true;
+
+    } catch {
+
+      return false;
+    }
+  }
+
+
+  private async resolveMoneyExePath():
+    Promise<string> {
+
+    if (
+      this.configuredMoneyExePath
+    ) {
+
+      const configured =
+        path.resolve(
+          this.configuredMoneyExePath
+        );
+
+
+      if (
+        await this.fileExists(
+          configured
+        )
+      ) {
+
+        return configured;
+      }
+
+
+      throw new MoneyCustomerError(
+        `Money S3 executable not found: ${configured}`
+      );
+    }
+
+
+    const candidates = [
+
+      "C:\\Program Files\\Seyfor\\Money S3\\MonS3.exe",
+
+      "C:\\Program Files (x86)\\Seyfor\\Money S3\\MonS3.exe",
+
+      "C:\\Program Files\\Solitea\\Money S3\\MonS3.exe",
+
+      "C:\\Program Files (x86)\\Solitea\\Money S3\\MonS3.exe",
+
+      "C:\\Program Files\\CIGLER SOFTWARE\\Money S3\\MonS3.exe",
+
+      "C:\\Program Files (x86)\\CIGLER SOFTWARE\\Money S3\\MonS3.exe"
+    ];
+
+
+    for (
+      const candidate
+      of candidates
+    ) {
+
+      if (
+        await this.fileExists(
+          candidate
+        )
+      ) {
+
+        return candidate;
+      }
+    }
+
+
+    throw new MoneyCustomerError(
+      [
+        "Cannot find MonS3.exe automatically.",
+        "",
+        "Run this in PowerShell:",
+        "",
+        'Get-ChildItem "C:\\Program Files","C:\\Program Files (x86)" -Filter MonS3.exe -Recurse -ErrorAction SilentlyContinue | Select-Object FullName',
+        "",
+        "Then set:",
+        "",
+        '$env:MONEY_S3_EXE = "FULL_PATH_TO_MonS3.exe"'
+      ].join("\n")
+    );
+  }
+
+
+  async getMoneyExePath():
+    Promise<string> {
+
+    return await this.resolveMoneyExePath();
+  }
+
+
+  private async runMoney(
+    args: string[]
+  ): Promise<void> {
+
+    const exe =
+      await this.resolveMoneyExePath();
+
+
+    const finalArgs =
+      [...args];
+
+
+    if (
+      this.moneyPassword
+    ) {
+
+      finalArgs.push(
+        `/p${this.moneyPassword}`
+      );
+    }
+
+
+    await new Promise<void>(
+      (
+        resolve,
+        reject
+      ) => {
+
+        const child =
+          spawn(
+            exe,
+            finalArgs,
+            {
+              windowsHide: true,
+              stdio: [
+                "ignore",
+                "pipe",
+                "pipe"
+              ]
+            }
+          );
+
+
+        let stdout = "";
+        let stderr = "";
+
+
+        child.stdout?.on(
+          "data",
+          data => {
+
+            stdout +=
+              String(data);
+          }
+        );
+
+
+        child.stderr?.on(
+          "data",
+          data => {
+
+            stderr +=
+              String(data);
+          }
+        );
+
+
+        child.on(
+          "error",
+          error => {
+
+            reject(
+              new MoneyCustomerError(
+                `Failed to start Money S3: ${error.message}`
+              )
+            );
+          }
+        );
+
+
+        child.on(
+          "close",
+          code => {
+
+            if (
+              code === 0
+            ) {
+
+              resolve();
+
+              return;
+            }
+
+
+            reject(
+              new MoneyCustomerError(
+                [
+                  `Money S3 finished with exit code ${code}.`,
+                  stdout.trim(),
+                  stderr.trim()
+                ]
+                  .filter(Boolean)
+                  .join("\n")
+              )
+            );
+          }
+        );
+      }
+    );
   }
 
 
@@ -288,7 +526,9 @@ export class MoneyCustomerClient {
 
 
     const document =
-      this.parser.parse(xml);
+      this.parser.parse(
+        xml
+      );
 
 
     if (
@@ -306,6 +546,244 @@ export class MoneyCustomerClient {
   }
 
 
+  private async getTransferContext():
+    Promise<TransferContext> {
+
+    const root =
+      await this.loadRoot();
+
+
+    const agendaCode =
+      text(
+        root["@_KodAgendy"]
+      );
+
+
+    const fiscalStart =
+      text(
+        root["@_HospRokOd"]
+      );
+
+
+    const transferCode =
+      this.configuredTransferCode ??
+      text(
+        root["@_ExpZkratka"]
+      ) ??
+      "_ADR";
+
+
+    const year =
+      fiscalStart
+        ?.match(
+          /^(\d{4})-/
+        )?.[1];
+
+
+    if (!agendaCode) {
+
+      throw new MoneyCustomerError(
+        "KodAgendy was not found in moneys3new.xml."
+      );
+    }
+
+
+    if (!year) {
+
+      throw new MoneyCustomerError(
+        "HospRokOd was not found in moneys3new.xml."
+      );
+    }
+
+
+    return {
+      agendaCode,
+      year,
+      transferCode
+    };
+  }
+
+
+  async syncFromMoney():
+    Promise<string> {
+
+    const context =
+      await this.getTransferContext();
+
+
+    const tempFile =
+      path.join(
+        path.dirname(
+          this.sourceXmlPath
+        ),
+        `moneys3-auto-export-${timestamp()}.xml`
+      );
+
+
+    await rm(
+      tempFile,
+      {
+        force: true
+      }
+    );
+
+
+    console.log(
+      "Starting automatic Money S3 XML export..."
+    );
+
+
+    await this.runMoney([
+      "/eXXXML",
+
+      `/fcE${context.transferCode}`,
+
+      "/ftD",
+
+      "/fw-",
+
+      `/ff${tempFile}`,
+
+      `/a:K${context.agendaCode}`,
+
+      `/r:R${context.year}`
+    ]);
+
+
+    if (
+      !await this.fileExists(
+        tempFile
+      )
+    ) {
+
+      throw new MoneyCustomerError(
+        `Money S3 did not create export file: ${tempFile}`
+      );
+    }
+
+
+    const info =
+      await stat(
+        tempFile
+      );
+
+
+    if (
+      info.size === 0
+    ) {
+
+      throw new MoneyCustomerError(
+        "Money S3 created an empty export file."
+      );
+    }
+
+
+    await copyFile(
+      tempFile,
+      this.sourceXmlPath
+    );
+
+
+    await rm(
+      tempFile,
+      {
+        force: true
+      }
+    );
+
+
+    console.log(
+      "Money S3 export finished."
+    );
+
+
+    return this.sourceXmlPath;
+  }
+
+
+  async importXmlIntoMoney(
+    xmlFilePath: string
+  ): Promise<string> {
+
+    const context =
+      await this.getTransferContext();
+
+
+    const importPath =
+      path.resolve(
+        xmlFilePath
+      );
+
+
+    if (
+      !await this.fileExists(
+        importPath
+      )
+    ) {
+
+      throw new MoneyCustomerError(
+        `Import XML does not exist: ${importPath}`
+      );
+    }
+
+
+    const reportDirectory =
+      path.join(
+        this.outputDirectory,
+        "reports"
+      );
+
+
+    await mkdir(
+      reportDirectory,
+      {
+        recursive: true
+      }
+    );
+
+
+    const reportPath =
+      path.join(
+        reportDirectory,
+        `money-import-report-${timestamp()}.xml`
+      );
+
+
+    console.log(
+      "Starting automatic Money S3 XML import..."
+    );
+
+
+    await this.runMoney([
+      "/eXXXML",
+
+      `/fcI${context.transferCode}`,
+
+      "/ftD",
+
+      "/fw-",
+
+      `/ff${importPath}`,
+
+      `/fr${reportPath}`,
+
+      "/fmN",
+
+      `/a:K${context.agendaCode}`,
+
+      `/r:R${context.year}`
+    ]);
+
+
+    console.log(
+      "Money S3 import finished."
+    );
+
+
+    return reportPath;
+  }
+
+
   private getFirmaObjects(
     root: XmlObject
   ): XmlObject[] {
@@ -317,11 +795,17 @@ export class MoneyCustomerClient {
 
 
     if (!firma) {
+
       return [];
     }
 
 
-    if (Array.isArray(firma)) {
+    if (
+      Array.isArray(
+        firma
+      )
+    ) {
+
       return firma;
     }
 
@@ -417,10 +901,14 @@ export class MoneyCustomerClient {
 
 
     return this
-      .getFirmaObjects(root)
+      .getFirmaObjects(
+        root
+      )
       .map(
         firma =>
-          this.mapFirma(firma)
+          this.mapFirma(
+            firma
+          )
       );
   }
 
@@ -471,6 +959,7 @@ export class MoneyCustomerClient {
       if (
         page.items.length === 0
       ) {
+
         return;
       }
 
@@ -491,6 +980,7 @@ export class MoneyCustomerClient {
       if (
         start >= page.total
       ) {
+
         return;
       }
     }
@@ -533,7 +1023,9 @@ export class MoneyCustomerClient {
 
 
           return identifiers
-            .includes(wanted);
+            .includes(
+              wanted
+            );
         }
       ) ?? null
     );
@@ -571,8 +1063,9 @@ export class MoneyCustomerClient {
 
 
     if (
-      Object.keys(address)
-        .length === 0
+      Object.keys(
+        address
+      ).length === 0
     ) {
 
       return undefined;
@@ -602,8 +1095,9 @@ export class MoneyCustomerClient {
 
 
     if (
-      Object.keys(mobile)
-        .length === 0
+      Object.keys(
+        mobile
+      ).length === 0
     ) {
 
       return undefined;
@@ -623,17 +1117,16 @@ export class MoneyCustomerClient {
 
 
     for (
-      const [
-        key,
-        value
-      ]
+      const [key, value]
       of Object.entries(
         sourceRoot
       )
     ) {
 
       if (
-        key.startsWith("@_")
+        key.startsWith(
+          "@_"
+        )
       ) {
 
         attributes[key] =
@@ -649,13 +1142,19 @@ export class MoneyCustomerClient {
     attributes["@_ExpDate"] =
       now
         .toISOString()
-        .slice(0, 10);
+        .slice(
+          0,
+          10
+        );
 
 
     attributes["@_ExpTime"] =
       now
         .toTimeString()
-        .slice(0, 8);
+        .slice(
+          0,
+          8
+        );
 
 
     attributes["@_description"] =
@@ -691,6 +1190,7 @@ export class MoneyCustomerClient {
       ),
 
       SeznamFirem: {
+
         Firma:
           removeUndefined(
             firma
@@ -700,6 +1200,7 @@ export class MoneyCustomerClient {
 
 
     const object = {
+
       MoneyData:
         moneyData
     };
@@ -723,17 +1224,8 @@ export class MoneyCustomerClient {
     );
 
 
-    const timestamp =
-      new Date()
-        .toISOString()
-        .replace(
-          /[:.]/g,
-          "-"
-        );
-
-
     const fileName =
-      `money-customer-${operation}-${timestamp}.xml`;
+      `money-customer-${operation}-${timestamp()}.xml`;
 
 
     const filePath =
@@ -842,7 +1334,7 @@ export class MoneyCustomerClient {
     if (!existing) {
 
       throw new MoneyCustomerError(
-        `Customer not found in exported XML: ${identifier}`
+        `Customer not found: ${identifier}`
       );
     }
 
@@ -933,7 +1425,7 @@ export class MoneyCustomerClient {
     if (!existing) {
 
       throw new MoneyCustomerError(
-        `Customer not found in exported XML: ${identifier}`
+        `Customer not found: ${identifier}`
       );
     }
 
@@ -959,5 +1451,136 @@ export class MoneyCustomerClient {
       "delete",
       firma
     );
+  }
+
+
+  async createCustomer(
+    customer: NewMoneyCustomer
+  ): Promise<MoneyCustomer> {
+
+    await this.syncFromMoney();
+
+
+    const importFile =
+      await this.createCustomerImport(
+        customer
+      );
+
+
+    const report =
+      await this.importXmlIntoMoney(
+        importFile
+      );
+
+
+    await this.syncFromMoney();
+
+
+    const created =
+      await this.getCustomer(
+        customer.code
+      );
+
+
+    if (!created) {
+
+      throw new MoneyCustomerError(
+        [
+          "Money S3 import finished, but the customer was not found afterwards.",
+          `Customer: ${customer.code}`,
+          `Import report: ${report}`
+        ].join("\n")
+      );
+    }
+
+
+    return created;
+  }
+
+
+  async updateCustomer(
+    identifier: string,
+    changes: MoneyCustomerUpdate
+  ): Promise<MoneyCustomer> {
+
+    await this.syncFromMoney();
+
+
+    const importFile =
+      await this.updateCustomerImport(
+        identifier,
+        changes
+      );
+
+
+    const report =
+      await this.importXmlIntoMoney(
+        importFile
+      );
+
+
+    await this.syncFromMoney();
+
+
+    const updated =
+      await this.getCustomer(
+        identifier
+      );
+
+
+    if (!updated) {
+
+      throw new MoneyCustomerError(
+        [
+          "Money S3 update finished, but the customer could not be found afterwards.",
+          `Customer: ${identifier}`,
+          `Import report: ${report}`
+        ].join("\n")
+      );
+    }
+
+
+    return updated;
+  }
+
+
+  async deleteCustomer(
+    identifier: string
+  ): Promise<void> {
+
+    await this.syncFromMoney();
+
+
+    const importFile =
+      await this.deleteCustomerImport(
+        identifier
+      );
+
+
+    const report =
+      await this.importXmlIntoMoney(
+        importFile
+      );
+
+
+    await this.syncFromMoney();
+
+
+    const remaining =
+      await this.getCustomer(
+        identifier
+      );
+
+
+    if (remaining) {
+
+      throw new MoneyCustomerError(
+        [
+          "Money S3 delete import finished, but the customer still exists.",
+          `Customer: ${identifier}`,
+          `Import report: ${report}`
+        ].join("\n")
+      );
+    }
   }
 }

@@ -3,10 +3,14 @@ import {
   MoneyCustomerError
 } from "./money-customer";
 
+import {
+  MoneyInvoiceClient,
+  MoneyInvoiceError
+} from "./money-invoice";
+
 
 const money =
   new MoneyCustomerClient({
-
     sourceXmlPath:
       "./moneys3new.xml",
 
@@ -15,194 +19,143 @@ const money =
   });
 
 
-async function main() {
+const invoices =
+  new MoneyInvoiceClient({
+    sourceXmlPath:
+      "./money-invoices.xml",
+
+    customerXmlPath:
+      "./moneys3new.xml",
+
+    outputDirectory:
+      "./imports"
+  });
+
+
+async function main():
+  Promise<void> {
 
   console.log(
-    "================================="
+    "========================================"
   );
 
   console.log(
-    "MONEY S3 XML CUSTOMER TEST"
+    "MONEY S3 AUTOMATIC DEMO"
   );
 
   console.log(
-    "================================="
+    "========================================"
   );
 
 
   console.log(
-    "\n1. READ CUSTOMERS"
+    "\n1. SYNC CUSTOMERS"
   );
 
+  await money.syncFromMoney();
 
-  const page1 =
+  const customerPage =
     await money.getCustomersPage(
       0,
       5
     );
 
-
   console.log(
-    `Total customers in XML: ${page1.total}`
+    `Customers: ${customerPage.total}`
   );
-
 
   for (
     const customer
-    of page1.items
+    of customerPage.items
   ) {
-
     console.log(
-      customer.guid,
-      customer.code,
-      customer.name
+      `${customer.code ?? "-"} | ${customer.name}`
     );
   }
 
 
   console.log(
-    "\n2. PAGE 2"
+    "\n2. SYNC INVOICES"
   );
 
+  await invoices.syncFromMoney();
 
-  const page2 =
-    await money.getCustomersPage(
-      5,
+
+  console.log(
+    "\n3. ISSUED INVOICES"
+  );
+
+  const issued =
+    await invoices.getInvoicesPage(
+      "issued",
+      0,
       5
     );
 
+  console.log(
+    `Issued invoices: ${issued.total}`
+  );
 
   for (
-    const customer
-    of page2.items
+    const invoice
+    of issued.items
   ) {
-
     console.log(
-      customer.guid,
-      customer.code,
-      customer.name
+      `${invoice.documentNumber} | ${invoice.total ?? "-"} | ${invoice.partnerName ?? "-"} | ${invoice.description ?? ""}`
     );
   }
 
 
   console.log(
-    "\n3. AUTOMATIC PAGINATION"
+    "\n4. RECEIVED INVOICES"
   );
 
-
-  let count = 0;
-
-
-  for await (
-    const customer
-    of money.iterateCustomers(5)
-  ) {
-
-    console.log(
-      `${customer.code} | ${customer.name}`
+  const received =
+    await invoices.getInvoicesPage(
+      "received",
+      0,
+      5
     );
 
+  console.log(
+    `Received invoices: ${received.total}`
+  );
 
-    count++;
-
-
-    if (count >= 15) {
-      break;
-    }
+  for (
+    const invoice
+    of received.items
+  ) {
+    console.log(
+      `${invoice.documentNumber} | ${invoice.total ?? "-"} | ${invoice.partnerName ?? "-"} | ${invoice.description ?? ""}`
+    );
   }
 
 
   console.log(
-    `Read ${count} customers.`
-  );
-
-
-  console.log(
-    "\n4. GENERATE CREATE XML"
-  );
-
-
-  const createFile =
-    await money.createCustomerImport({
-
-      code:
-        "TS-TEST-001",
-
-      name:
-        "TypeScript Test Company",
-
-      street:
-        "Test Street 123",
-
-      city:
-        "Praha",
-
-      postCode:
-        "11000",
-
-      country:
-        "Česká republika",
-
-      countryCode:
-        "CZ",
-
-      mobilePrefix:
-        "+420",
-
-      mobile:
-        "123456789",
-
-      physicalPerson:
-        false,
-
-      vatPayer:
-        false
-    });
-
-
-  console.log(
-    "CREATE import generated:"
-  );
-
-
-  console.log(
-    createFile
-  );
-
-
-  console.log(
-    "\nImport this XML manually into Money S3."
-  );
-
-
-  console.log(
-    "\n================================="
+    "\n========================================"
   );
 
   console.log(
-    "TEST COMPLETED"
+    "DEMO COMPLETED"
   );
 
   console.log(
-    "================================="
+    "========================================"
   );
 }
 
 
 main().catch(
   error => {
-
     if (
-      error instanceof
-      MoneyCustomerError
+      error instanceof MoneyCustomerError ||
+      error instanceof MoneyInvoiceError
     ) {
-
       console.error(
-        `Money error: ${error.message}`
+        `Money error:\n${error.message}`
       );
 
     } else {
-
       console.error(
         error
       );
